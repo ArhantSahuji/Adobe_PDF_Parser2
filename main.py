@@ -20,13 +20,14 @@ def load_persona():
 
 persona_data = load_persona()
 
-# --- BASIC HEADING DETECTION UTILS ---
+# --- LANGUAGE DETECTION ---
 def detect_language(text):
     try:
         return detect(text)
     except:
         return "unknown"
 
+# --- HEADING EXTRACTION ---
 def extract_headings(doc):
     headings = []
     font_sizes = defaultdict(int)
@@ -71,13 +72,14 @@ def extract_headings(doc):
                         })
     return headings
 
-# --- SECTION FILTERING & SUMMARY ---
+# --- FILTER SECTIONS ---
 def filter_relevant_sections(sections):
     keywords = ["abstract", "introduction", "summary", "conclusion"]
     keywords += persona_data.get("job_to_be_done", {}).get("task", "").lower().split()
     relevant = [s for s in sections if any(k in s["section_title"].lower() for k in keywords)]
     return relevant
 
+# --- SUMMARIZE ---
 def summarize_text(text, lang="en"):
     if lang != "en":
         text = text.replace("\n", " ")
@@ -89,7 +91,13 @@ def summarize_text(text, lang="en"):
 def process_pdf(filepath):
     try:
         doc = fitz.open(filepath)
-        lang_text = " ".join([p.get_text() for p in doc[:min(5, len(doc))]])
+        num_pages = len(doc)
+
+        if num_pages == 0:
+            print(f"Skipping empty PDF: {filepath.name}")
+            return
+
+        lang_text = " ".join([p.get_text() for p in doc[:min(5, num_pages)]])
         lang = detect_language(lang_text)
 
         headings = extract_headings(doc)
@@ -100,31 +108,39 @@ def process_pdf(filepath):
 
         subsection_summaries = []
         for sec in relevant:
-            page_idx = sec["page_number"] - 1
-            if 0 <= page_idx < len(doc):  # ✅ Fix: safe page access
-                page = doc[page_idx]
-                text = page.get_text()
-                summary = summarize_text(text, lang)
-                subsection_summaries.append({
-                    "document": filepath.name,
-                    "section_title": sec["section_title"],
-                    "summary": summary,
-                    "language": lang
-                })
+            page_idx = sec.get("page_number", 1) - 1
+            if isinstance(page_idx, int) and 0 <= page_idx < num_pages:
+                try:
+                    page = doc[page_idx]
+                    text = page.get_text()
+                    summary = summarize_text(text, lang)
+                    subsection_summaries.append({
+                        "document": filepath.name,
+                        "section_title": sec["section_title"],
+                        "summary": summary,
+                        "language": lang
+                    })
+                except Exception as e:
+                    print(f"Error reading page {page_idx+1} of {filepath.name}: {e}")
+            else:
+                print(f"Invalid page number {page_idx+1} in {filepath.name}")
 
         output_json = {
             "metadata": {
                 "filename": filepath.name,
                 "language": lang,
-                "num_pages": len(doc)
+                "num_pages": num_pages
             },
             "extracted_sections": headings,
             "subsection_analysis": subsection_summaries
         }
 
+        OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
         out_path = OUTPUT_DIR / f"{filepath.stem}.json"
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(output_json, f, indent=2, ensure_ascii=False)
+
+        print(f"Processed: {filepath.name}")
 
     except Exception as e:
         print(f"Error in {filepath.name}: {e}")
@@ -136,6 +152,6 @@ def process_all():
     for pdf in tqdm(pdf_files, desc="Processing PDFs"):
         process_pdf(pdf)
 
-# --- CLI ENTRY ---
+# --- ENTRY ---
 if __name__ == "__main__":
     process_all()
